@@ -41,10 +41,14 @@ contract Bank is usingOraclize {
     mapping(uint256 => Loan) public loanById;
     // User address => loans by that user
     mapping(address => Loan[]) public userLoans;
+    // Holder address => date when he took profits to restart his earnings
+    mapping(address => uint256) public lastHolderExit;
     Loan[] public loans;
     Loan[] public closedLoans;
+    address[] public holders;
     address public owner;
     uint256 public lastId;
+    uint256 public earnings;
 
     modifier onlyOwner {
         require(msg.sender == owner, 'This function can only be executed by the owner');
@@ -60,6 +64,7 @@ contract Bank is usingOraclize {
     function addFunds() public payable {
         require(msg.value > 0, 'You must send more than zero ether');
         holdingEth[msg.sender] += msg.value;
+        if(!checkExistingHolder()) holders.push(msg.sender);
     }
 
     /// @notice To get a loan for ETH in exchange for the any compatible token note that you need to send a small quantity of ETH to process this transaction at least 0.01 ETH so that the oracle can pay for the cost of requesting the token value
@@ -110,7 +115,7 @@ contract Bank is usingOraclize {
        emit CreatedLoan(l.id, l.stakedToken, l.borrowedEth, l.receiver);
     }
 
-    /// @notice To pay a given loan
+    /// @notice To pay a given loan with the 5% fee of the lend ETH
     /// @param _loanId The loan id to pay
     function payLoan(uint256 _loanId) public payable {
         Loan memory l = loanById[_loanId];
@@ -124,6 +129,7 @@ contract Bank is usingOraclize {
         // Send him his tokens back
         IERC20(l.stakedToken).transfer(l.stakedTokenAmount);
 
+        earnings = l.borrowedEth * 0.05;
         l.isOpen = false;
         l.state = 'paid';
         queryLoan[l.queryId] = l;
@@ -138,9 +144,12 @@ contract Bank is usingOraclize {
         }
     }
 
-    /// @notice To pay a holder that is participating in a loan after it's completed
+    /// @notice To pay a holder depending on time holding up to 5% per year of the current dynamic earnings
     function payHolder() public {
+        int256 percentageOfHoldings = holdingEth[msg.sender] * 100 / address(this).balance;
+        uint256 timeSinceLastExit = now - lastHolderExit[msg.sender];
 
+        lastHolderExit[msg.sender] = now;
     }
 
     /// @notice To extract the funds that a user may be holding in the bank
@@ -163,6 +172,20 @@ contract Bank is usingOraclize {
     /// @notice To check which tokens are available in this bank so that the User Interface can check the balance and name of those tokens inside here
     /// @return address[] The addresses of the tokens holded inside this contract
     function getAvailableTokens() public view returns(address[] memory) {
+
+    }
+
+    /// @notice To check if a user is already added to the list of holders
+    function checkExistingHolder() public view returns(bool) {
+        for(uint256 i = 0; i < holders.length; i++) {
+            if(holders[i] == msg.sender) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function calculateHolderEarnings() public view returns(uint256) {
 
     }
 }
