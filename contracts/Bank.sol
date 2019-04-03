@@ -16,19 +16,29 @@ contract Bank is usingOraclize {
         - A function to pay holders based on their token holdings monthly and if their tokens are used for loans
         - A function to display the current balance of tokens inside the platform
     */
+    event CreatedLoan(uint256 indexed id, address indexed token, uint256 indexed borrowedEth, address receiver);
+
     struct Loan {
         uint256 id;
+        address receiver;
         bytes32 queryId;
-        address tokenTo
+        address stakedToken;
+        uint256 stakedTokenAmount;
+        int256 initialTokenPrice;
+        uint256 borrowedEth;
+        uint256 createdAt;
+        uint256 expirationDate;
+        bool isOpen;
     }
-    // User address => all the tokens he holds
-    mapping(address => address[]) public holdingAddresses;
-    // User address => Token address => quantity of tokens currently holding
-    mapping(address => mapping(address => uint256)) public holdingValue;
+    // User address => eth holding
+    mapping(address => uint256) public holdingEth;
     // User address => amount of ETH currently lend for a particular user
     mapping(address => uint256) public lendEth;
-    // Query id by oraclize => loan requested in ETH
-    mapping(bytes32 => uint256) public queryLoans;
+    // Query id by oraclize => Loan
+    mapping(bytes32 => Loan) public queryLoan;
+    // Id => Loan
+    mapping(uint256 => Loan) public loanById;
+    Loan[] public loans;
     address public owner;
     uint256 public lastId;
 
@@ -49,18 +59,26 @@ contract Bank is usingOraclize {
     }
 
     /// @notice To get a loan for ETH in exchange for the any compatible token note that you need to send a small quantity of ETH to process this transaction at least 0.01 ETH so that the oracle can pay for the cost of requesting the token value
+    /// @param _receivedToken The token that this contract will hold until the loan is payed
+    /// @param _quantityToBorrow The quantity of ETH that you want to receive as the loan
     function loan(address _receivedToken, uint256 _quantityToBorrow) public payable {
         require(_quantityToBorrow > 0, 'You must borrow more than zero ETH');
-        // First we check that there's enough balance of ETH to lend him
         require(address(this).balance >= _quantityToBorrow, 'There are not enough ETH funds to lend you right now in this contract');
-        // If there is, then we check that the user sent enough tokens to stake which in this case must be 50% of the value of the first token, how do we know that? We check ETH prices of the token and then we
+        require(msg.value >= 10 finney, 'You must pay at least 0.01 ETH to run this function so that it can read the current token price');
+
         string memory symbol = IERC20(_receivedToken).symbol();
-        // Request the price in ETH of the token to receive
+        // Request the price in ETH of the token to receive the loan
         bytes32 queryId = oraclize_query(oraclize_query("URL", strConcat("json(https://api.bittrex.com/api/v1.1/public/getticker?market=ETH-", symbol, ").result.Bid"));)
-        queryLoans[queryId] = _quantityToBorrow;
+        Loan memory l = Loan(lastId, msg.sender, queryId, _receivedToken, 0, _quantityToBorrow, now, 0, false);
+        queryLoan[queryId] = l;
+        loanById[lastId] = l;
+        lastId++;
     }
 
     /// @notice The function that gets called by oraclize to get the price of the symbol to stake for the loan
+    /// @param _queryId The unique query id generated when the oraclize event started
+    /// @param _result The received token price with decimals as a string
+    /// @param _proof The unique proof to confirm that this function has been called by a valid smart contract
     function __callback(
        bytes32 _queryId,
        string memory _result,
@@ -68,21 +86,46 @@ contract Bank is usingOraclize {
     ) public {
        require(msg.sender == oraclize_cbAddress(), 'The callback function can only be executed by oraclize');
 
+       Loan memory l = queryLoan[_queryId];
+       int256 tokenPrice = parseInt(_result);
+       uint256 amountToStake = l.stakedTokenAmount * tokenPrice * 0.5; // Multiply it by 0.5 to divide it by 2 so that the user sends double the quantity to borrow worth of tokens
+       require(tokenPrice > 0, 'The token price must be larger than absolute zero');
+       require(amountToStake >= l.borrowedEth, 'The quantity of tokens to stake must be larger than or equal twice the amount of ETH to borrow');
 
+       IERC20(l.stakedToken).transferFrom(l.receiver, address(this), l.stakedTokenAmount);
+       l.receiver.transfer(l.borrowedEth);
+       l.initialTokenPrice = tokenPrice;
+       l.expirationDate = now + 6 months;
+       l.isOpen = true;
+       loanById[l.id] = l;
+       queryLoan[_queryId] = l;
+       loans.push(l);
 
-
-       emit GeneratedRandom(_queryId, numberOfParticipants[_queryId], parseInt(_result));
-       hydroLottery.endLottery(_queryId, parseInt(_result));
+       emit CreatedLoan(l.id, l.stakedToken, l.borrowedEth, l.receiver);
     }
 
     /// @notice To pay a given loan
-    function payLoan(uint256 _loadId, bool _isEth, address _tokenAddress) public payable {
-
+    /// @param _loanId The loan id to pay
+    function payLoan(uint256 _loanId) public payable {
+        Loan memory l = loanById[_loanId];
+        uint256 priceWithFivePercentFee = l.borrowedEth + (l.borrowedEth * 0.05);
+        require(l.isOpen, 'The loan must be open to be payable');
+        require(msg.value >= priceWithFivePercentFee, 'You must pay the ETH borrowed by the loan plus the five percent fee not less');
+        // If he paid more than he borrowed, return him the difference without the fee tho
+        if(msg.value > priceWithFivePercentFee) {
+            l.receiver.transfer(msg.value - priceWithFivePercentFee);
+        }
+        IERC20(l.stakedToken).transfer(l.stakedTokenAmount);
     }
 
     /// @notice To pay a holder that is participating in a loan after it's completed
     function payHolder() public {
 
+    }
+
+    /// @notice To extract the funds that a user may be holding in the bank
+    function extractFunds() public {
+        msg.sender.transfer(holdingEth[msg.sender]);
     }
 
     /// @notice To add an operator Ethereum address or to remove one based on the _type value
@@ -101,16 +144,5 @@ contract Bank is usingOraclize {
     /// @return address[] The addresses of the tokens holded inside this contract
     function getAvailableTokens() public view returns(address[] memory) {
 
-    }
-
-    /// @notice To check if a token is already added to the list of holdings for the sender
-    /// @return bool If it's been already added or not
-    function checkExistingToken(address _token) public view returns(bool) {
-        for(uint256 i = 0; i < holdingAddresses.length; i++) {
-            if(holdingAddresses[i] == _token) {
-                return true;
-            }
-        }
-        return false;
     }
 }
