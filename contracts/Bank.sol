@@ -31,8 +31,14 @@ contract Bank is usingOraclize {
         bool isOpen;
         string state; // It can be 'pending', 'started', 'expired' or 'paid'
     }
+    struct Hold {
+        address holder;
+        uint256[] investmentDates;
+        uint256[] investmentQuantities;
+        uint256[] extractionDates;
+    }
     // User address => eth holding
-    mapping(address => uint256) public holdingEth;
+    mapping(address => Hold) public holdings;
     // User address => amount of ETH currently lend for a particular user
     mapping(address => uint256) public lendEth;
     // Query id by oraclize => Loan
@@ -63,8 +69,12 @@ contract Bank is usingOraclize {
     /// @notice To add ETH funds to the bank, those funds may be used for loans and if so, the holder won't be able to extract those funds in exchange for a 5% total payment of their funds when the loan is closed
     function addFunds() public payable {
         require(msg.value > 0, 'You must send more than zero ether');
-        holdingEth[msg.sender] += msg.value;
-        if(!checkExistingHolder()) holders.push(msg.sender);
+        Hold memory hold = Hold(msg.sender, );
+        holdingEth[msg.sender].push(msg.value);
+        if(!checkExistingHolder()) {
+            holders.push(msg.sender);
+            lastHolderExit[msg.sender] = now;
+        }
     }
 
     /// @notice To get a loan for ETH in exchange for the any compatible token note that you need to send a small quantity of ETH to process this transaction at least 0.01 ETH so that the oracle can pay for the cost of requesting the token value
@@ -129,7 +139,7 @@ contract Bank is usingOraclize {
         // Send him his tokens back
         IERC20(l.stakedToken).transfer(l.stakedTokenAmount);
 
-        earnings = l.borrowedEth * 0.05;
+        earnings += l.borrowedEth * 0.05;
         l.isOpen = false;
         l.state = 'paid';
         queryLoan[l.queryId] = l;
@@ -146,14 +156,16 @@ contract Bank is usingOraclize {
 
     /// @notice To pay a holder depending on time holding up to 5% per year of the current dynamic earnings
     function payHolder() public {
-        int256 percentageOfHoldings = holdingEth[msg.sender] * 100 / address(this).balance;
-        uint256 timeSinceLastExit = now - lastHolderExit[msg.sender];
+        require(holdingEth[msg.sender] > 0, 'You must hold more than zero ether to earn a profit');
 
+        msg.sender.transfer(checkEarnings());
         lastHolderExit[msg.sender] = now;
     }
 
     /// @notice To extract the funds that a user may be holding in the bank
     function extractFunds() public {
+        holdingEth[msg.sender] = 0;
+        lastHolderExit[msg.sender] = 0;
         msg.sender.transfer(holdingEth[msg.sender]);
     }
 
@@ -173,6 +185,18 @@ contract Bank is usingOraclize {
     /// @return address[] The addresses of the tokens holded inside this contract
     function getAvailableTokens() public view returns(address[] memory) {
 
+    }
+
+    /// @notice To check how much ether you've earned
+    /// @return int256 The number of ETH
+    function checkEarnings() public view returns(int256) {
+        int256 percentageOfHoldings = holdingEth[msg.sender] * 100 / address(this).balance;
+        int256 timeSinceLastExit = now - lastHolderExit[msg.sender];
+
+        /* 365 days = earnings * 0.05
+        timeSinceLastExit days = x earnings */
+        int256 quantityOfEarnings = (earnings * 0.05 * timeSinceLastExit) / 365 days;
+        return quantityOfEarnings
     }
 
     /// @notice To check if a user is already added to the list of holders
