@@ -29,6 +29,7 @@ contract Bank is usingOraclize {
         uint256 createdAt;
         uint256 expirationDate;
         bool isOpen;
+        string state; // It can be 'pending', 'started', 'expired' or 'paid'
     }
     // User address => eth holding
     mapping(address => uint256) public holdingEth;
@@ -38,7 +39,10 @@ contract Bank is usingOraclize {
     mapping(bytes32 => Loan) public queryLoan;
     // Id => Loan
     mapping(uint256 => Loan) public loanById;
+    // User address => loans by that user
+    mapping(address => Loan[]) public userLoans;
     Loan[] public loans;
+    Loan[] public closedLoans;
     address public owner;
     uint256 public lastId;
 
@@ -69,7 +73,7 @@ contract Bank is usingOraclize {
         string memory symbol = IERC20(_receivedToken).symbol();
         // Request the price in ETH of the token to receive the loan
         bytes32 queryId = oraclize_query(oraclize_query("URL", strConcat("json(https://api.bittrex.com/api/v1.1/public/getticker?market=ETH-", symbol, ").result.Bid"));)
-        Loan memory l = Loan(lastId, msg.sender, queryId, _receivedToken, 0, _quantityToBorrow, now, 0, false);
+        Loan memory l = Loan(lastId, msg.sender, queryId, _receivedToken, 0, _quantityToBorrow, now, 0, false, 'pending');
         queryLoan[queryId] = l;
         loanById[lastId] = l;
         lastId++;
@@ -97,8 +101,10 @@ contract Bank is usingOraclize {
        l.initialTokenPrice = tokenPrice;
        l.expirationDate = now + 6 months;
        l.isOpen = true;
+       l.state = 'started';
        loanById[l.id] = l;
        queryLoan[_queryId] = l;
+       userLoans[l.receiver].push(l);
        loans.push(l);
 
        emit CreatedLoan(l.id, l.stakedToken, l.borrowedEth, l.receiver);
@@ -115,7 +121,21 @@ contract Bank is usingOraclize {
         if(msg.value > priceWithFivePercentFee) {
             l.receiver.transfer(msg.value - priceWithFivePercentFee);
         }
+        // Send him his tokens back
         IERC20(l.stakedToken).transfer(l.stakedTokenAmount);
+
+        l.isOpen = false;
+        l.state = 'paid';
+        queryLoan[l.queryId] = l;
+        loanById[l.id] = l;
+        closedLoans.push(l);
+
+        // Update the loan from the array of user loans with the paid status
+        for(uint256 i = 0; i < userLoans[l.receiver].length; i++) {
+            if(userLoans[l.receiver][i].id == l.id) {
+                userLoans[l.receiver][i] = l;
+            }
+        }
     }
 
     /// @notice To pay a holder that is participating in a loan after it's completed
