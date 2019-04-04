@@ -60,6 +60,11 @@ contract Bank is usingOraclize {
         _;
     }
 
+    modifier onlyOwnerOrOperator {
+        require(msg.sender == owner || checkExistingOperator(msg.sender), 'This function can only be executed by the owner or an approved operator');
+        _;
+    }
+
     constructor() public {
         owner = msg.sender;
         oraclize_setProof(proofType_Ledger);
@@ -201,6 +206,10 @@ contract Bank is usingOraclize {
         }
     }
 
+    function closeLoan() public onlyOwnerOrOperator {
+
+    }
+
     /// @notice To compare the price of the token used for the loan so that we can detect drops in value for selling those tokens when needed
     function monitorLoan() public view returns(uint256 initialPrice, uint256 currentPrice, uint256 percentageChange) {
 
@@ -232,6 +241,15 @@ contract Bank is usingOraclize {
     function checkExistingHolder() public view returns(bool) {
         for(uint256 i = 0; i < holders.length; i++) {
             if(holders[i] == msg.sender) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function checkExistingOperator(address _operator) public view returns(bool) {
+        for(uint256 i = 0; i < operators.length; i++) {
+            if(operators[i] == _operator) {
                 return true;
             }
         }
