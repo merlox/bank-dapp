@@ -31,7 +31,7 @@ contract Bank is usingOraclize {
         uint256 createdAt;
         uint256 expirationDate;
         bool isOpen;
-        string state; // It can be 'pending', 'started', 'expired', 'dropped' or 'paid'
+        string state; // It can be 'pending', 'started', 'expired', or 'paid'
     }
     struct Hold {
         uint256 id;
@@ -128,6 +128,7 @@ contract Bank is usingOraclize {
        }
     }
 
+    /// @notice To update the price of a token used in a loan to close it if the value drops too low
     function updateLoanPrice(string _result, bytes32 _queryId) internal {
         Loan memory l = queryLoan[_queryId];
         int256 tokenPrice = parseInt(_result);
@@ -238,8 +239,32 @@ contract Bank is usingOraclize {
         }
     }
 
-    function closeLoan() public onlyOwnerOrOperator {
+    function closeLoan(uint256 _loanId) public onlyOwnerOrOperator {
+        Loan memory l = loanById[_loanId];
+        require(l.receiver != address(0), 'The selected loan is invalid');
 
+        int256 percentageDrop =
+
+        // If the price of the token used in the loan dropped below or equal 40% the initial value, close it
+        if(l.currentTokenPrice <= l.initialTokenPrice * 0.6)  {
+
+        } else if() {
+            // Or if the time to pay the loan has expired it, close it
+
+        }
+
+        l.isOpen = false;
+        l.state = 'expired';
+        queryLoan[l.queryId] = l;
+        loanById[l.id] = l;
+        closedLoans.push(l);
+
+        // Update the loan from the array of user loans with the paid status
+        for(uint256 i = 0; i < userLoans[l.receiver].length; i++) {
+            if(userLoans[l.receiver][i].id == l.id) {
+                userLoans[l.receiver][i] = l;
+            }
+        }
     }
 
     /// @notice To compare the price of the token used for the loan so that we can detect drops in value for selling those tokens when needed
