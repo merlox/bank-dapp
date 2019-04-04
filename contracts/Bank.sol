@@ -17,6 +17,7 @@ contract Bank is usingOraclize {
         - A function to display the current balance of tokens inside the platform
     */
     event CreatedLoan(uint256 indexed id, address indexed token, uint256 indexed borrowedEth, address receiver);
+    event UpdatedLoanTokenPrice(uint256 indexed id, int256 indexed tokenPrice);
 
     struct Loan {
         uint256 id;
@@ -25,11 +26,12 @@ contract Bank is usingOraclize {
         address stakedToken;
         uint256 stakedTokenAmount;
         int256 initialTokenPrice;
+        int256 currentTokenPrice;
         uint256 borrowedEth;
         uint256 createdAt;
         uint256 expirationDate;
         bool isOpen;
-        string state; // It can be 'pending', 'started', 'expired' or 'paid'
+        string state; // It can be 'pending', 'started', 'expired', 'dropped' or 'paid'
     }
     struct Hold {
         uint256 id;
@@ -43,6 +45,8 @@ contract Bank is usingOraclize {
     mapping(address => uint256) public lendEth;
     // Query id by oraclize => Loan
     mapping(bytes32 => Loan) public queryLoan;
+    // Query id => The loan to update the current price to check for collaterals
+    mapping(bytes32 => Loan) public queryUpdateLoanPrice;
     // Id => Loan
     mapping(uint256 => Loan) public loanById;
     // User address => loans by that user
@@ -98,7 +102,7 @@ contract Bank is usingOraclize {
         string memory symbol = IERC20(_receivedToken).symbol();
         // Request the price in ETH of the token to receive the loan
         bytes32 queryId = oraclize_query(oraclize_query("URL", strConcat("json(https://api.bittrex.com/api/v1.1/public/getticker?market=ETH-", symbol, ").result.Bid"));)
-        Loan memory l = Loan(lastId, msg.sender, queryId, _receivedToken, 0, _quantityToBorrow, now, 0, false, 'pending');
+        Loan memory l = Loan(lastId, msg.sender, queryId, _receivedToken, 0, 0, _quantityToBorrow, now, 0, false, 'pending');
         queryLoan[queryId] = l;
         loanById[lastId] = l;
         lastId++;
@@ -115,24 +119,50 @@ contract Bank is usingOraclize {
     ) public {
        require(msg.sender == oraclize_cbAddress(), 'The callback function can only be executed by oraclize');
 
+       Loan memory l = queryUpdateLoanPrice[_queryId];
        Loan memory l = queryLoan[_queryId];
-       int256 tokenPrice = parseInt(_result);
-       uint256 amountToStake = l.stakedTokenAmount * tokenPrice * 0.5; // Multiply it by 0.5 to divide it by 2 so that the user sends double the quantity to borrow worth of tokens
-       require(tokenPrice > 0, 'The token price must be larger than absolute zero');
-       require(amountToStake >= l.borrowedEth, 'The quantity of tokens to stake must be larger than or equal twice the amount of ETH to borrow');
+       if(l.receiver != address(0)) {
+           updateLoanPrice(_result, _queryId);
+       } else if(l.receiver != address(0)) {
+           setLoan(_result, _queryId);
+       }
+    }
 
-       IERC20(l.stakedToken).transferFrom(l.receiver, address(this), l.stakedTokenAmount);
-       l.receiver.transfer(l.borrowedEth);
-       l.initialTokenPrice = tokenPrice;
-       l.expirationDate = now + 6 months;
-       l.isOpen = true;
-       l.state = 'started';
-       loanById[l.id] = l;
-       queryLoan[_queryId] = l;
-       userLoans[l.receiver].push(l);
-       loans.push(l);
+    function updateLoanPrice(string _result, bytes32 _queryId) internal {
+        Loan memory l = queryLoan[_queryId];
+        int256 tokenPrice = parseInt(_result);
+        l.currentTokenPrice = tokenPrice;
 
-       emit CreatedLoan(l.id, l.stakedToken, l.borrowedEth, l.receiver);
+        loanById[l.id] = l;
+        for(uint256 i = 0; i < userLoans[l.receiver].length; i++) {
+            if(userLoans[l.receiver][i].id == l.id) {
+                userLoans[l.receiver][i] = l;
+                break;
+            }
+        }
+        emit UpdatedLoanTokenPrice(l.id, tokenPrice);
+    }
+
+    function setLoan(string _result, bytes32 _queryId) internal {
+        Loan memory l = queryLoan[_queryId];
+        int256 tokenPrice = parseInt(_result);
+        uint256 amountToStake = l.stakedTokenAmount * tokenPrice * 0.5; // Multiply it by 0.5 to divide it by 2 so that the user sends double the quantity to borrow worth of tokens
+        require(tokenPrice > 0, 'The token price must be larger than absolute zero');
+        require(amountToStake >= l.borrowedEth, 'The quantity of tokens to stake must be larger than or equal twice the amount of ETH to borrow');
+
+        IERC20(l.stakedToken).transferFrom(l.receiver, address(this), l.stakedTokenAmount);
+        l.receiver.transfer(l.borrowedEth);
+        l.initialTokenPrice = tokenPrice;
+        l.currentTokenPrice = tokenPrice;
+        l.expirationDate = now + 6 months;
+        l.isOpen = true;
+        l.state = 'started';
+        loanById[l.id] = l;
+        queryLoan[_queryId] = l;
+        userLoans[l.receiver].push(l);
+        loans.push(l);
+
+        emit CreatedLoan(l.id, l.stakedToken, l.borrowedEth, l.receiver);
     }
 
     /// @notice To pay a given loan with the 5% fee of the lend ETH
@@ -195,10 +225,12 @@ contract Bank is usingOraclize {
         for(uint256 i = 0; i < operators.length; i++) {
             if(_type == 'add' && operators[i] == _user) {
                 operatorExists = true;
-            } else if(_type == 'remove') {
+                break;
+            } else if(_type == 'remove' && operators[i] == _user) {
                 address lastOperator = operators[operators.length - 1];
                 operators[i] = lastOperator;
                 operators--;
+                break;
             }
         }
         if(_type == 'add' && !operatorExists) {
@@ -211,14 +243,13 @@ contract Bank is usingOraclize {
     }
 
     /// @notice To compare the price of the token used for the loan so that we can detect drops in value for selling those tokens when needed
-    function monitorLoan() public view returns(uint256 initialPrice, uint256 currentPrice, uint256 percentageChange) {
-
-    }
-
-    /// @notice To check which tokens are available in this bank so that the User Interface can check the balance and name of those tokens inside here
-    /// @return address[] The addresses of the tokens holded inside this contract
-    function getAvailableTokens() public view returns(address[] memory) {
-
+    function monitorLoan(uint256 _loanId) public payable {
+        Loan memory l = loanById[_loanId];
+        require(l.receiver != address(0), 'The loan id must be an existing loan');
+        string memory symbol = IERC20(l.stakedToken).symbol();
+        // Request the price in ETH of the token to receive the loan
+        bytes32 queryId = oraclize_query(oraclize_query("URL", strConcat("json(https://api.bittrex.com/api/v1.1/public/getticker?market=ETH-", symbol, ").result.Bid"));)
+        queryUpdateLoanPrice[queryId] = l;
     }
 
     /// @notice To check how much ether you've earned
@@ -247,6 +278,7 @@ contract Bank is usingOraclize {
         return false;
     }
 
+    /// @notice To check if a user is already added to the list of operators
     function checkExistingOperator(address _operator) public view returns(bool) {
         for(uint256 i = 0; i < operators.length; i++) {
             if(operators[i] == _operator) {
