@@ -32,13 +32,13 @@ contract Bank is usingOraclize {
         string state; // It can be 'pending', 'started', 'expired' or 'paid'
     }
     struct Hold {
+        uint256 id;
         address holder;
-        uint256[] investmentDates;
-        uint256[] investmentQuantities;
-        uint256[] extractionDates;
+        uint256 date;
+        uint256 quantity;
     }
     // User address => eth holding
-    mapping(address => Hold) public holdings;
+    mapping(address => Hold[]) public holdings;
     // User address => amount of ETH currently lend for a particular user
     mapping(address => uint256) public lendEth;
     // Query id by oraclize => Loan
@@ -47,11 +47,10 @@ contract Bank is usingOraclize {
     mapping(uint256 => Loan) public loanById;
     // User address => loans by that user
     mapping(address => Loan[]) public userLoans;
-    // Holder address => date when he took profits to restart his earnings
-    mapping(address => uint256) public lastHolderExit;
     Loan[] public loans;
     Loan[] public closedLoans;
     address[] public holders;
+    address[] public operators;
     address public owner;
     uint256 public lastId;
     uint256 public earnings;
@@ -69,11 +68,17 @@ contract Bank is usingOraclize {
     /// @notice To add ETH funds to the bank, those funds may be used for loans and if so, the holder won't be able to extract those funds in exchange for a 5% total payment of their funds when the loan is closed
     function addFunds() public payable {
         require(msg.value > 0, 'You must send more than zero ether');
-        Hold memory hold = Hold(msg.sender, );
-        holdingEth[msg.sender].push(msg.value);
         if(!checkExistingHolder()) {
             holders.push(msg.sender);
-            lastHolderExit[msg.sender] = now;
+        }
+        if(holdingEth[msg.sender].holder != address(0)) {
+            Hold memory hold = holdingEth[msg.sender];
+            hold.investmentDates.push(now);
+            hold.investmentQuantities.push(msg.value);
+            holdingEth[msg.sender] = hold;
+        } else {
+            Hold memory hold = Hold(msg.sender, new uint256[](now), new uint256[](msg.value), new uint256[](now));
+            holdingEth[msg.sender] = hold;
         }
     }
 
@@ -156,24 +161,44 @@ contract Bank is usingOraclize {
 
     /// @notice To pay a holder depending on time holding up to 5% per year of the current dynamic earnings
     function payHolder() public {
-        require(holdingEth[msg.sender] > 0, 'You must hold more than zero ether to earn a profit');
+        require(holdingEth[msg.sender].holder != address(0), 'You must hold more than zero ether to earn a profit');
+        int256 totalEarnings = checkEarnings();
 
-        msg.sender.transfer(checkEarnings());
-        lastHolderExit[msg.sender] = now;
+        // Update the state of the holdings before sending the ether to avoid reentrancy
+        for(uint256 i = 0; i < holdings[msg.sender].length; i++) {
+            holdings[msg.sender][i].date = now;
+        }
+
+        msg.sender.transfer(totalEarnings);
     }
 
     /// @notice To extract the funds that a user may be holding in the bank
     function extractFunds() public {
-        holdingEth[msg.sender] = 0;
-        lastHolderExit[msg.sender] = 0;
-        msg.sender.transfer(holdingEth[msg.sender]);
+        uint256 totalFunds;
+        for(uint256 i = 0; i < holdings[msg.sender].length; i++) {
+            totalFunds += holdings[msg.sender][i].quantity;
+            holdings[msg.sender][i].quantity = 0;
+        }
+        msg.sender.transfer(totalFunds);
     }
 
     /// @notice To add an operator Ethereum address or to remove one based on the _type value
     /// @param _type If it's an 'add' or 'remove' operation
     /// @param _user The address of the operator
     function modifyOperator(bytes32 _type, address _user) public onlyOwner {
-
+        bool operatorExists = false;
+        for(uint256 i = 0; i < operators.length; i++) {
+            if(_type == 'add' && operators[i] == _user) {
+                operatorExists = true;
+            } else if(_type == 'remove') {
+                address lastOperator = operators[operators.length - 1];
+                operators[i] = lastOperator;
+                operators--;
+            }
+        }
+        if(_type == 'add' && !operatorExists) {
+            operators.push(_user);
+        }
     }
 
     /// @notice To compare the price of the token used for the loan so that we can detect drops in value for selling those tokens when needed
@@ -190,13 +215,17 @@ contract Bank is usingOraclize {
     /// @notice To check how much ether you've earned
     /// @return int256 The number of ETH
     function checkEarnings() public view returns(int256) {
-        int256 percentageOfHoldings = holdingEth[msg.sender] * 100 / address(this).balance;
-        int256 timeSinceLastExit = now - lastHolderExit[msg.sender];
+        int256 quantityOfEarnings;
+        for(uint256 i = 0; i < holdings[msg.sender].length; i++) {
+            int256 percentageOfHoldings = holdingEth[msg.sender].quantity * 100 / address(this).balance;
+            uint256 daysPassed = now - holdings[msg.sender][i].date;
+            int256 thisEarnings = earnings * 0.05 * daysPassed / 365 days * percentageOfHoldings;
 
-        /* 365 days = earnings * 0.05
-        timeSinceLastExit days = x earnings */
-        int256 quantityOfEarnings = (earnings * 0.05 * timeSinceLastExit) / 365 days;
-        return quantityOfEarnings
+            /* 365 days = earnings * 0.05 * percentage of holdings
+            timeSinceLastExit days = x earnings */
+            quantityOfEarnings += thisEarnings;
+        }
+        return quantityOfEarnings;
     }
 
     /// @notice To check if a user is already added to the list of holders
@@ -207,9 +236,5 @@ contract Bank is usingOraclize {
             }
         }
         return false;
-    }
-
-    function calculateHolderEarnings() public view returns(uint256) {
-
     }
 }
